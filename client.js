@@ -1,35 +1,43 @@
-const axios = require('axios');
+const grpc = require('@grpc/grpc-js');
+const protoLoader = require('@grpc/proto-loader');
+const path = require('path');
+
+// Cargar la definición del servicio desde el archivo proto
+const PROTO_PATH = path.join(__dirname, './service.proto');
+const packageDefinition = protoLoader.loadSync(PROTO_PATH);
+const grpcObject = grpc.loadPackageDefinition(packageDefinition);
+const solverProto = grpcObject.solver;
+
+// Crear cliente gRPC para el balanceador
+const client = new solverProto.SolverService('localhost:3000', grpc.credentials.createInsecure());
 
 // Genera una matriz aleatoria de tamaño nx(n+1)
 function generateMatrix(n) {
-  // Crear matriz con valores decimales
-  const matrix = Array.from({ length: n }, () => Array.from({ length: n + 1 }, () => (Math.random() * 10).toFixed(3) * 1));
-  return matrix;
+  return Array.from({ length: n }, () => ({
+    row: Array.from({ length: n + 1 }, () => Math.random() * 10)  // Generar un array de números
+  }));
 }
 
 // Función cliente para solicitar la resolución de la matriz generada
 async function requestSolution(n) {
   const matrix = generateMatrix(n);
   
-  // Mostrar la matriz generada
   console.log("Matriz generada:");
-  matrix.forEach(row => {
-    console.log(row.map(num => num.toFixed(3)).join(' | ')); // Formatear para impresión
+  matrix.forEach((row, index) => {
+    console.log(`Fila ${index + 1}:`, row.row.map(num => num.toFixed(3)).join(' | '));
   });
 
-  try {
-    // Enviar la solicitud al balanceador en localhost:3000
-    const response = await axios.post('http://localhost:3000/solve', { matrix });
-    console.log("Solución recibida del balanceador:");
-    
-    // Formatear y mostrar la solución recibida
-    const solution = response.data.solution.map(value => value.toFixed(3));
-    console.log(solution.join(' | '));
-  } catch (error) {
-    console.error("Error al solicitar la solución:", error.message);
-  }
+  client.solve({ matrix: matrix }, (error, response) => {
+    if (error) {
+      console.error("Error al solicitar la solución:", error.message);
+    } else {
+      console.log("Solución recibida del balanceador:");
+      const solution = response.solution.map(value => value.toFixed(3));
+      console.log(solution.join(' | '));
+    }
+  });
 }
 
 // Definir el tamaño de la matriz para solicitar su resolución
-const n = 5;
+const n = 3;
 requestSolution(n);

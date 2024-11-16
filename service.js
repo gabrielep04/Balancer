@@ -1,34 +1,52 @@
-const express = require('express');
+const grpc = require('@grpc/grpc-js');
+const protoLoader = require('@grpc/proto-loader');
 const os = require('os');
-const app = express();
-app.use(express.json());
+const path = require('path');
 
-// Variables de monitorización para el microservicio
-let activeProcesses = 0;       // Procesos actualmente activos
-let successfulProcesses = 0;    // Procesos exitosamente completados
-let failedProcesses = 0;        // Procesos que fallaron
+// Cargar la definición del servicio desde el archivo proto
+const PROTO_PATH = path.join(__dirname, './service.proto');
+const packageDefinition = protoLoader.loadSync(PROTO_PATH);
+const grpcObject = grpc.loadPackageDefinition(packageDefinition);
+const solverProto = grpcObject.solver;
+
+// Variables de monitorización
+let activeProcesses = 0;
+let successfulProcesses = 0;
+let failedProcesses = 0;
 
 // Función para resolver el sistema de ecuaciones usando el método de Gauss-Jordan
 function solveGaussJordan(matrix) {
   const n = matrix.length;
+
+  console.log("Resolviendo sistema con matriz:", JSON.stringify(matrix));
+
   for (let i = 0; i < n; i++) {
-    // Encontrar el pivote para la fila actual
+    // Paso 1: Búsqueda del pivote más grande en la columna
+    console.log(`Buscando el pivote en la columna ${i}`);
     let maxRow = i;
     for (let k = i + 1; k < n; k++) {
       if (Math.abs(matrix[k][i]) > Math.abs(matrix[maxRow][i])) {
         maxRow = k;
       }
     }
-    // Intercambiar filas para que el pivote sea el máximo valor
+
+    if (matrix[maxRow][i] === 0) {
+      console.error(`Error: Pivote en columna ${i} es cero. Matriz singular.`);
+      throw new Error('El pivote es cero, la matriz no tiene solución única.');
+    }
+
+    console.log(`Intercambiando filas ${i} y ${maxRow} si es necesario`);
     [matrix[i], matrix[maxRow]] = [matrix[maxRow], matrix[i]];
 
-    // Dividir la fila por el valor del pivote para normalizarlo a 1
-    for (let k = i + 1; k < n + 1; k++) {
-      matrix[i][k] /= matrix[i][i];
+    // Paso 2: Normalización del pivote
+    const pivot = matrix[i][i];
+    console.log(`Normalizando fila ${i} con pivote ${pivot}`);
+    for (let k = i; k < n + 1; k++) {
+      matrix[i][k] /= pivot;
     }
-    matrix[i][i] = 1;
 
-    // Hacer ceros en otras filas en la columna del pivote
+    // Paso 3: Eliminación de otros elementos en la columna i
+    console.log(`Eliminando otros elementos en la columna ${i}`);
     for (let j = 0; j < n; j++) {
       if (j !== i) {
         const c = matrix[j][i];
@@ -38,41 +56,63 @@ function solveGaussJordan(matrix) {
       }
     }
   }
-  // Devolver solo las soluciones de la matriz extendida
-  return matrix.map(row => row[n]);
+
+  const solution = matrix.map(row => row[n]);
+  console.log("Solución obtenida:", solution);
+  return solution;
 }
 
-// Ruta para resolver sistemas de ecuaciones
-app.post('/solve', (req, res) => {
-  activeProcesses++; // Incrementar el contador de procesos activos
-  try {
-    const { matrix } = req.body;
-    const solution = solveGaussJordan(matrix); // Resolver la matriz
-    successfulProcesses++; // Incrementar el contador de procesos exitosos
-    res.json({ solution }); // Enviar solución al cliente
-  } catch (error) {
-    failedProcesses++; // Incrementar el contador de procesos fallidos
-    res.status(500).json({ error: 'Error en la resolución' });
-  } finally {
-    activeProcesses--; // Decrementar el contador de procesos activos
+// Definir el servicio gRPC
+const server = new grpc.Server();
+
+// Obtener el puerto desde la variable de entorno, o usar 4001 como predeterminado
+const port = process.env.PORT || 4001;
+
+server.addService(solverProto.SolverService.service, {
+  solve: (call, callback) => {
+    activeProcesses++;
+    try {
+      const { matrix } = call.request;
+      console.log("Matriz recibida en el servicio:", JSON.stringify(matrix));
+
+      // Validar y procesar la matriz
+      if (!Array.isArray(matrix) || matrix.length === 0) {
+        throw new Error('Matriz vacía o mal formada.');
+      }
+
+      const flatMatrix = matrix.map(row => row.row);
+      if (!flatMatrix.every(r => r.length === flatMatrix.length + 1)) {
+        throw new Error('Matriz no es cuadrada o tiene dimensiones incorrectas.');
+      }
+
+      const solution = solveGaussJordan(flatMatrix);
+      console.log("Solucion:", solution);
+      successfulProcesses++;
+      callback(null, { solution });
+    } catch (error) {
+      console.error("Error durante la resolución:", error.message);
+      failedProcesses++;
+      callback({
+        code: grpc.status.INTERNAL,
+        details: error.message,
+      });
+    } finally {
+      activeProcesses--;
+    }
+  },
+
+  getStatus: (call, callback) => {
+    const cpuLoad = os.loadavg()[0];
+    const memoryAvailable = os.freemem() / (1024 ** 2);
+    callback(null, { cpuLoad, memoryAvailable });
+  },
+});
+
+server.bindAsync(`0.0.0.0:${port}`, grpc.ServerCredentials.createInsecure(), (error, actualPort) => {
+  if (error) {
+    console.error("Error al iniciar el servicio:", error);
+    return;
   }
-});
-
-// Endpoint para consultar el estado del microservicio
-app.get('/status', (req, res) => {
-  const cpuLoad = os.loadavg()[0];  // Carga de CPU promedio en 1 minuto
-  const memoryAvailable = os.freemem() / (1024 ** 2); // Memoria libre en MB
-  res.json({
-    cpuLoad,
-    memoryAvailable,
-    processesActive: activeProcesses,
-    processesSuccessful: successfulProcesses,
-    processesFailed: failedProcesses
-  });
-});
-
-// Iniciar el microservicio en el puerto especificado
-const PORT = process.env.PORT || 4001;
-app.listen(PORT, () => {
-  console.log(`Microservicio escuchando en el puerto ${PORT}`);
+  console.log(`Servicio gRPC corriendo en el puerto ${actualPort}`);
+  server;
 });

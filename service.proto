@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package solver;
+
+service SolverService {
+  rpc solve(SolveRequest) returns (SolveResponse);
+  rpc getStatus(Empty) returns (StatusResponse);
+}
+
+message SolveRequest {
+  repeated MatrixRow matrix = 1;
+}
+
+message SolveResponse {
+  repeated float solution = 1;
+}
+
+message StatusResponse {
+  float cpuLoad = 1;
+  float memoryAvailable = 2;
+}
+
+message Empty {}
+
+message MatrixRow {
+  repeated float row = 1;
+}
