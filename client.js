@@ -24,7 +24,7 @@ async function requestSolution(n) {
   
   console.log("Matriz generada:");
   matrix.forEach((row, index) => {
-    console.log(`Fila ${index + 1}:`, row.row.map(num => num.toFixed(3)).join(' | '));
+    console.log(row.row.map(num => num.toFixed(3)).join(' | '));
   });
 
   client.solve({ matrix: matrix }, (error, response) => {

@@ -18,11 +18,8 @@ let failedProcesses = 0;
 function solveGaussJordan(matrix) {
   const n = matrix.length;
 
-  console.log("Resolviendo sistema con matriz:", JSON.stringify(matrix));
-
   for (let i = 0; i < n; i++) {
     // Paso 1: Búsqueda del pivote más grande en la columna
-    console.log(`Buscando el pivote en la columna ${i}`);
     let maxRow = i;
     for (let k = i + 1; k < n; k++) {
       if (Math.abs(matrix[k][i]) > Math.abs(matrix[maxRow][i])) {

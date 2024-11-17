@@ -1,6 +1,7 @@
 const grpc = require('@grpc/grpc-js');
 const protoLoader = require('@grpc/proto-loader');
 const path = require('path');
+const net = require('net');
 
 // Cargar la definición del servicio desde el archivo proto
 const PROTO_PATH = path.join(__dirname, './service.proto');
@@ -25,7 +26,7 @@ let requestHistory = [];
 const clientServices = services.map(service => {
   return {
     id: service.id,
-    client: new solverProto.SolverService(service.host, grpc.credentials.createInsecure()) // Usar SolverService en lugar de Solver
+    client: new solverProto.SolverService(service.host, grpc.credentials.createInsecure())
   };
 });
 
@@ -41,6 +42,28 @@ function getServiceStatus(client) {
     });
   });
 }
+
+// Servidor para enviar datos de estados a la tabla
+const tableServer = net.createServer(socket => {
+  console.log('Conexión establecida con la terminal de tabla');
+  setInterval(async () => {
+    const serviceStatuses = await Promise.all(clientServices.map(service => getServiceStatus(service).catch(() => null)));
+    const availableServices = clientServices
+      .map((service, index) => serviceStatuses[index] ? ({ ...service, ...serviceStatuses[index] }) : null)
+      .filter(service => service);
+
+    if (availableServices.length > 0) {
+      const sortedServices = availableServices.sort((a, b) => {
+        if (b.memoryAvailable === a.memoryAvailable) {
+          return a.cpuLoad - b.cpuLoad;
+        }
+        return b.memoryAvailable - a.memoryAvailable;
+      });
+      socket.write(JSON.stringify(sortedServices) + '\n');
+    }
+  }, 2000); // Enviar datos cada 2 segundos
+});
+tableServer.listen(5000, () => console.log('Servidor de tabla escuchando en el puerto 5000'));
 
 // Ruta principal de resolución de sistemas de ecuaciones
 const server = new grpc.Server();
@@ -66,15 +89,16 @@ server.addService(solverProto.SolverService.service, {
       });
     }
 
-    // Seleccionar el servicio con menor carga de CPU
-    const selectedService = availableServices.sort((a, b) => {
-      return (a.cpuLoad + a.memoryAvailable) - (b.cpuLoad + b.memoryAvailable);
-    })[0];
+    const sortedServices = availableServices.sort((a, b) => {
+      if (b.memoryAvailable === a.memoryAvailable) {
+        return a.cpuLoad - b.cpuLoad;
+      }
+      return b.memoryAvailable - a.memoryAvailable;
+    });
 
-    // Agregar solicitud al historial con procesos y microservicio seleccionado
+    const selectedService = sortedServices[0];
     requestHistory.push({
       serviceId: selectedService.id,
-      serviceHost: selectedService.client.host,
       timestamp: new Date().toISOString(),
       activeProcesses,
       successfulProcesses,
@@ -82,7 +106,6 @@ server.addService(solverProto.SolverService.service, {
     });
     console.log("Historial de solicitudes:", requestHistory);
 
-    // Realizar solicitud de resolución
     selectedService.client.solve(call.request, (error, response) => {
       if (error) {
         failedProcesses++;
@@ -99,7 +122,6 @@ server.addService(solverProto.SolverService.service, {
   }
 });
 
-// Iniciar servidor gRPC
 server.bindAsync('localhost:3000', grpc.ServerCredentials.createInsecure(), (error, port) => {
   if (error) {
     console.error("Error al iniciar el servidor:", error);
